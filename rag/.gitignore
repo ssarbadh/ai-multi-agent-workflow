@@ -1,0 +1,76 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log
+
+# Data directories (keep configs, ignore runtime data)
+data/*.db
+data/*.sqlite
+data/cache/
+data/embeddings/
+data/indexes/
+# Keep data configs and evaluation datasets
+!data/
+!data/.gitkeep
+!data/*.json
+!data/*.yaml
+!data/*.yml
+
+# Google Credentials
+google-service-account.json
+
+# Cache
+.cache/
+*.cache
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Models (downloaded ML models, not Python code)
+/models/
+sentence-transformers/
+
+# Evaluation datasets
+eval/*.json
+!eval/eval_dataset.json
+
+# Temporary files
+*.tmp
+tmp/

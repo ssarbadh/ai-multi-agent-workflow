@@ -1,0 +1,135 @@
+contracts:
+  logs:
+    - provider: quickwit
+      server: quickwit-server
+      tool: fetch_service_error_logs
+    - provider: quickwit
+      server: quickwit-server
+      tool: fetch_service_logs
+    - provider: elasticsearch
+      server: elasticsearch-server
+      tool: elasticsearch_fetch_service_logs
+    - provider: newrelic
+      server: newrelic-mcp
+      tool: newrelic_query_logs
+
+  metrics:
+    - provider: prometheus
+      server: prometheus-server
+      tool: prometheus_execute_range_query
+    - provider: newrelic
+      server: newrelic-mcp
+      tool: newrelic_nrql_query
+
+  alerts:
+    - provider: alertmanager
+      server: alertmanager-mcp
+      tool: alertmanager_get_alerts
+    - provider: newrelic
+      server: newrelic-mcp
+      tool: newrelic_list_alert_violations
+
+  incident_history:
+    - provider: servicenow
+      server: servicenow-mcp
+      tool: servicenow_search_incidents
+
+  istio:
+    - provider: istio
+      server: istio-server
+      tool: istio_get_istio_resources_for_service
+
+  graph:
+    - provider: graph
+      server: graph-server
+      tool: graph_get_service_dependencies
+    - provider: graph
+      server: graph-server
+      tool: graph_get_impacted_services
+    - provider: graph
+      server: graph-server
+      tool: graph_get_recent_anomalies
+    - provider: graph
+      server: graph-server
+      tool: graph_get_recent_incidents
+    - provider: graph
+      server: graph-server
+      tool: graph_get_incident_root_cause
+    - provider: graph
+      server: graph-server
+      tool: graph_list_services
+    - provider: graph
+      server: graph-server
+      tool: graph_resolve_kubernetes_service
+
+  kubernetes:
+    - provider: kubernetes
+      server: kubernetes-mcp
+      tool: kubernetes_list_workloads
+    - provider: kubernetes
+      server: kubernetes-mcp
+      tool: kubernetes_get_pod_logs
+    - provider: kubernetes
+      server: kubernetes-mcp
+      tool: kubernetes_get_service_runtime_context
+    - provider: kubernetes
+      server: kubernetes-mcp
+      tool: kubernetes_exec_in_pod
+    - provider: kubernetes
+      server: kubernetes-mcp
+      tool: kubernetes_rollout_restart_deployment
+
+  aws:
+    - provider: aws
+      server: aws-mcp
+      tool: aws_list_load_balancers
+    - provider: aws
+      server: aws-mcp
+      tool: aws_list_rds_instances
+    - provider: aws
+      server: aws-mcp
+      tool: aws_list_elasticache_clusters
+    - provider: aws
+      server: aws-mcp
+      tool: aws_list_ec2_instances
+    - provider: aws
+      server: aws-mcp
+      tool: aws_list_s3_buckets
+
+  # Provider + resource-type aware contracts for ranked top-N probing.
+  cloud_provider_contracts:
+    - provider: aws
+      server: aws-mcp
+      tool: aws_list_load_balancers
+      resource_types: [load_balancer, dns]
+      arguments:
+        service_hint: ""
+        region: ""
+    - provider: aws
+      server: aws-mcp
+      tool: aws_list_rds_instances
+      resource_types: [database]
+      arguments:
+        instance_hint: ""
+        region: ""
+    - provider: aws
+      server: aws-mcp
+      tool: aws_list_elasticache_clusters
+      resource_types: [database]
+      arguments:
+        cluster_hint: ""
+        region: ""
+    - provider: aws
+      server: aws-mcp
+      tool: aws_list_ec2_instances
+      resource_types: [vm]
+      arguments:
+        instance_hint: ""
+        region: ""
+    - provider: aws
+      server: aws-mcp
+      tool: aws_list_s3_buckets
+      resource_types: [object_storage]
+      arguments:
+        bucket_hint: ""
+        region: ""

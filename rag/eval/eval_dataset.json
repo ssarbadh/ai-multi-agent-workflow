@@ -1,0 +1,20 @@
+[
+  {
+    "id": "eval_001",
+    "query": "How do I deploy a Kubernetes application?",
+    "expected_keywords": ["deployment", "kubectl", "yaml", "container"],
+    "relevant_docs": []
+  },
+  {
+    "id": "eval_002",
+    "query": "What is VMware vCenter?",
+    "expected_keywords": ["vmware", "virtualization", "management", "esxi"],
+    "relevant_docs": []
+  },
+  {
+    "id": "eval_003",
+    "query": "How to configure RBAC in Kubernetes?",
+    "expected_keywords": ["role", "rolebinding", "permissions", "serviceaccount"],
+    "relevant_docs": []
+  }
+]

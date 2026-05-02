@@ -1,0 +1,39 @@
+{
+  "incident_id": "cli_debug_rca_001",
+  "user_id": "cli-user",
+  "title": "High error rate on checkout-api",
+  "description": "HTTP 5xx spikes on checkout-api pods in prod namespace after deploy.",
+  "target_service": "prod/checkout-api",
+  "operation_status": "running",
+  "current_node": "rca_agent",
+  "created_at": "2025-01-01T00:00:00",
+  "updated_at": "2025-01-01T00:00:00",
+  "context_summary": "logs=12, alerts=3, rag_docs=2, graph_hits=0, mcp_logs=quickwit, mcp_metrics=prometheus, istio_vs=1, istio_dr=0, graph_deps=2, graph_incidents=0",
+  "metrics": {
+    "cpu": { "avg": 0.85 }
+  },
+  "alerts": [
+    { "message": "Error rate > 5% for checkout-api", "severity": "critical" }
+  ],
+  "rag_results": {
+    "results": [
+      {
+        "score": 0.82,
+        "text": "Similar incident: DB connection pool exhaustion on payment service."
+      }
+    ]
+  },
+  "graph_context": {
+    "dependencies": [{ "from": "checkout-api", "to": "payment-db" }],
+    "recent_incidents": []
+  },
+  "istio_context": {
+    "virtual_services": [{ "name": "checkout-api-vs" }],
+    "destination_rules": []
+  },
+  "logs": [],
+  "servicenow_history": [],
+  "prompt_versions": {},
+  "mcp_contract_hits": [],
+  "execution_results": []
+}

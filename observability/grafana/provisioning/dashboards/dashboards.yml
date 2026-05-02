@@ -1,0 +1,15 @@
+# Grafana dashboard provisioning for AegisOps
+
+apiVersion: 1
+
+providers:
+  - name: 'AegisOps Dashboards'
+    orgId: 1
+    folder: 'AegisOps'
+    folderUid: 'aegisops'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/json

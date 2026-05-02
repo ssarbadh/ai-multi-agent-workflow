@@ -1,0 +1,111 @@
+version: '3.8'
+
+services:
+  # FastAPI Application
+  rag-service:
+    build: .
+    container_name: rag-service
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - DEBUG=false
+    env_file:
+      - .env
+    volumes:
+      - ./google-service-account.json:/app/google-service-account.json:ro
+      - ./logs:/app/logs
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - rag-network
+    depends_on:
+      - redis
+
+  # Redis (Celery Broker & Result Backend + Cache)
+  redis:
+    image: redis:7-alpine
+    container_name: rag-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  # Celery Worker - Indexing Queue
+  celery-indexing:
+    build: .
+    container_name: rag-celery-indexing
+    command: celery -A app.celery_app worker --loglevel=info --queues=indexing --concurrency=2 --max-tasks-per-child=100
+    environment:
+      - ENVIRONMENT=production
+    env_file:
+      - .env
+    volumes:
+      - ./google-service-account.json:/app/google-service-account.json:ro
+      - ./logs:/app/logs
+      - ./data:/app/data
+    restart: unless-stopped
+    networks:
+      - rag-network
+    depends_on:
+      - redis
+
+  # Celery Worker - Embedding Queue (GPU/CPU optimized)
+  celery-embedding:
+    build: .
+    container_name: rag-celery-embedding
+    command: celery -A app.celery_app worker --loglevel=info --queues=embedding --concurrency=4 --max-tasks-per-child=50 --pool=threads
+    environment:
+      - ENVIRONMENT=production
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    restart: unless-stopped
+    networks:
+      - rag-network
+    depends_on:
+      - redis
+    # Uncomment for GPU support
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # Celery Flower (Monitoring)
+  flower:
+    build: .
+    container_name: rag-flower
+    command: celery -A app.celery_app flower --port=5555 --url_prefix=flower
+    ports:
+      - "5555:5555"
+    environment:
+      - ENVIRONMENT=production
+    env_file:
+      - .env
+    restart: unless-stopped
+    networks:
+      - rag-network
+    depends_on:
+      - redis
+
+volumes:
+  redis-data:
+
+networks:
+  rag-network:
+    driver: bridge

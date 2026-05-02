@@ -1,0 +1,71 @@
+Best architecture (generic, no hardcoding)
+1) Add a normalized Incident Scope contract (single source of truth)
+Introduce a structured scope object that every stage consumes:
+
+environment: dev|staging|prod|unknown
+cloud_providers: ["aws","gcp","azure", ...] (multi allowed)
+resource_types: ["kubernetes","vm","load_balancer","database","object_storage","dns", ...]
+resource_identifiers: free-form hints (service name, URL/FQDN, instance id, db endpoint, etc.)
+regions (optional list)
+confidence + requires_user_confirmation flags
+This should live in:
+
+CLI schema/state (IntentClassification, MasterState)
+API request (IncidentAnalyzeRequest)
+orchestration state (SREMultiAgentState)
+2) Add a dedicated scope_resolution step before context_aggregation
+This agent/node should:
+
+parse user message for missing scope signals (env/cloud/resource)
+infer with confidence
+if critical fields missing, emit a user-facing clarification prompt (router/HITL) before expensive probing
+preserve uncertainty instead of forcing false defaults
+This directly addresses your “router should push user to mention environment” requirement.
+
+3) Replace provider-hardcoded probing with capability-driven probing
+Today contracts are static in code. Move them to config (YAML/JSON), keyed by:
+
+resource_type
+cloud_provider
+capability (inventory, logs, metrics, dns_resolution, health, etc.)
+tool argument template rules
+Runtime flow:
+
+discover available MCP tools (list_tools)
+select matching contracts from config for resolved scope
+execute only relevant capability set
+degrade gracefully when a provider/tool is unavailable
+This keeps it generic and future-proof for Azure/GCP without rewriting core logic each time.
+
+4) Make environment explicit per incident (not global app env)
+Right now log env derivation is tied to settings.ENVIRONMENT.
+For incident debugging, use incident.environment first; fallback only if absent.
+Also support env-specific credential bundles (prod, staging, dev) in config/secret manager.
+
+5) Unify target identity from “service only” to “target entities”
+Keep target_service for backward compatibility, but add generic target entities:
+
+service_name
+url_or_fqdn
+db_identifier
+instance_identifier
+bucket_name
+k8s_namespace/cluster if available
+Then route checks by entity class:
+
+URL failure -> DNS/LB chain
+DB failure -> DB instance + connectivity + auth signals
+crashloop/service failure -> k8s/VM runtime path
+Minimal-change rollout plan
+Phase 1 (safe schema extension): add new optional scope fields in CLI + API + state, keep old behavior as fallback.
+Phase 2 (routing upgrade): router extracts scope fields and prompts for missing environment/cloud where confidence is low.
+Phase 3 (scope node): add scope_resolution node in orchestration before context aggregation.
+Phase 4 (contract externalization): move MCP_CONTEXT_CONTRACTS into config and select contracts by resolved scope.
+Phase 5 (playbooks): add issue-type diagnostic playbooks (service_crash, url_dns, database_unavailable) mapped by scope + symptoms.
+Clarifications needed before I implement
+Input contract: should /incident/analyze accept a single scope object, or flat fields (environment, cloud_providers, resource_types, ...)?
+Environment enum: exactly which values do you want enforced (dev, staging, prod, qa, etc.)?
+Routing behavior: if env/cloud is missing, should router always ask follow-up, or proceed with "unknown" + best-effort checks?
+Provider priority: when multiple clouds are given, parallel probe all, or rank using confidence and probe top-N first?
+Config source: do you want capability contracts in repo YAML, DB, or remote config service?
+If you confirm these five, I can implement this in a backward-compatible way starting with Phase 1+2 immediately.

@@ -1,0 +1,64 @@
+{
+  "istio_calls": [
+    {"caller": "ems-api-gateway", "callee": "ems-user-svc", "request_rate": 150.0, "latency_ms": 45.0},
+    {"caller": "ems-api-gateway", "callee": "ems-orchestration-svc", "request_rate": 80.0, "latency_ms": 120.0},
+    {"caller": "ems-user-svc", "callee": "ems-mongodb", "request_rate": 200.0, "latency_ms": 12.0},
+    {"caller": "ems-orchestration-svc", "callee": "ems-input-core-svc", "request_rate": 50.0, "latency_ms": 80.0},
+    {"caller": "ems-checkout", "callee": "ems-rds-main", "request_rate": 300.0, "latency_ms": 8.0}
+  ],
+  "databases": [
+    {"name": "ems-rds-main", "type": "RDS"},
+    {"name": "ems-mongodb", "type": "Mongo"},
+    {"name": "ems-redis-cache", "type": "Redis"}
+  ],
+  "service_uses": [
+    {"service": "ems-user-svc", "database": "ems-mongodb"},
+    {"service": "ems-orchestration-svc", "database": "ems-rds-main"},
+    {"service": "ems-api-gateway", "database": "ems-redis-cache"}
+  ],
+  "anomalies": [
+    {
+      "type": "latency_spike",
+      "value": 450.0,
+      "timestamp": 1711200000,
+      "baseline": 120.0,
+      "labels": {"service": "checkout", "job": "checkout-api"}
+    },
+    {
+      "type": "error_rate_spike",
+      "value": 0.15,
+      "timestamp": 1711200060,
+      "baseline": 0.02,
+      "labels": {"service": "payment", "job": "payment-service"}
+    }
+  ],
+  "error_patterns": [
+    {
+      "signature": "ERROR: Connection timeout to database",
+      "count": 12
+    },
+    {
+      "signature": "java.lang.NullPointerException at com.example.Service.handle",
+      "count": 3
+    },
+    {
+      "signature": "503 Service Unavailable",
+      "count": 8
+    }
+  ],
+  "logs_sample": [
+    {
+      "message": "ERROR: Connection timeout to database",
+      "kubernetes.container_name": "checkout",
+      "kubernetes.pod_name": "checkout-abc123",
+      "level": "ERROR"
+    },
+    {
+      "message": "java.lang.NullPointerException at com.example.Service.handle()",
+      "kubernetes.container_name": "payment",
+      "kubernetes.pod_name": "payment-xyz789",
+      "level": "ERROR"
+    }
+  ],
+  "services": ["checkout", "payment", "api-gateway"]
+}

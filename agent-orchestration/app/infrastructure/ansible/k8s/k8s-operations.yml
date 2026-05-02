@@ -1,0 +1,659 @@
+---
+# Kubernetes Operations Ansible Playbook
+# Usage: ansible-playbook k8s-ops.yml --tags "tag_name" -e "variable=value"
+
+- name: Kubernetes Operations Playbook
+  hosts: localhost
+  gather_facts: no
+  vars:
+    kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('~/.kube/config', true) }}"
+    namespace: "default"
+    
+  tasks:
+    # ==========================================
+    # SCALING DEPLOYMENTS & HPA/VPA TUNING
+    # ==========================================
+    - name: Scale Deployment
+      tags: [scale, hpa, deployment]
+      block:
+        - name: Scale deployment manually
+          kubernetes.core.k8s_scale:
+            kubeconfig: "{{ kubeconfig }}"
+            api_version: apps/v1
+            kind: Deployment
+            name: "{{ deployment_name }}"
+            namespace: "{{ namespace }}"
+            replicas: "{{ replicas }}"
+          when: deployment_name is defined and replicas is defined
+
+        - name: Configure HPA
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig }}"
+            state: present
+            definition:
+              apiVersion: autoscaling/v2
+              kind: HorizontalPodAutoscaler
+              metadata:
+                name: "{{ hpa_name }}"
+                namespace: "{{ namespace }}"
+              spec:
+                scaleTargetRef:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  name: "{{ deployment_name }}"
+                minReplicas: "{{ min_replicas | default(2) }}"
+                maxReplicas: "{{ max_replicas | default(10) }}"
+                metrics:
+                  - type: Resource
+                    resource:
+                      name: cpu
+                      target:
+                        type: Utilization
+                        averageUtilization: "{{ cpu_threshold | default(80) }}"
+          when: hpa_name is defined and deployment_name is defined
+
+        - name: Configure VPA
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig }}"
+            state: present
+            definition:
+              apiVersion: autoscaling.k8s.io/v1
+              kind: VerticalPodAutoscaler
+              metadata:
+                name: "{{ vpa_name }}"
+                namespace: "{{ namespace }}"
+              spec:
+                targetRef:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  name: "{{ deployment_name }}"
+                updatePolicy:
+                  updateMode: "{{ vpa_mode | default('Auto') }}"
+          when: vpa_name is defined and deployment_name is defined
+
+    # ==========================================
+    # ROLLING UPGRADES
+    # ==========================================
+    - name: Rolling Upgrade Deployment
+      tags: [upgrade, rolling-update]
+      block:
+        - name: Update deployment image
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig }}"
+            state: present
+            definition:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: "{{ deployment_name }}"
+                namespace: "{{ namespace }}"
+              spec:
+                template:
+                  spec:
+                    containers:
+                      - name: "{{ container_name }}"
+                        image: "{{ new_image }}"
+          when: deployment_name is defined and new_image is defined
+
+        - name: Wait for rollout to complete
+          shell: |
+            kubectl rollout status deployment/{{ deployment_name }} -n {{ namespace }} --timeout={{ rollout_timeout | default('5m') }}
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          when: deployment_name is defined
+
+        - name: Check rollout history
+          shell: kubectl rollout history deployment/{{ deployment_name }} -n {{ namespace }}
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          register: rollout_history
+          when: deployment_name is defined
+
+        - name: Display rollout history
+          debug:
+            var: rollout_history.stdout_lines
+          when: rollout_history is defined
+
+    # ==========================================
+    # NODE OPERATIONS (CORDON/DRAIN/REPLACE)
+    # ==========================================
+    - name: Node Operations
+      tags: [node, cordon, drain, replace]
+      block:
+        - name: Cordon node
+          shell: kubectl cordon {{ node_name }}
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          when: node_name is defined and node_action == 'cordon'
+
+        - name: Drain node
+          shell: |
+            kubectl drain {{ node_name }} \
+              --ignore-daemonsets \
+              --delete-emptydir-data \
+              --force \
+              --grace-period={{ grace_period | default(30) }} \
+              --timeout={{ drain_timeout | default('5m') }}
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          when: node_name is defined and node_action == 'drain'
+
+        - name: Uncordon node
+          shell: kubectl uncordon {{ node_name }}
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          when: node_name is defined and node_action == 'uncordon'
+
+        - name: Delete node (for replacement)
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig }}"
+            state: absent
+            api_version: v1
+            kind: Node
+            name: "{{ node_name }}"
+          when: node_name is defined and node_action == 'delete'
+
+    # ==========================================
+    # CERTIFICATE ROTATION
+    # ==========================================
+    - name: Rotate Cluster Certificates
+      tags: [certs, rotate, security]
+      block:
+        - name: Backup current certificates
+          shell: |
+            mkdir -p /backup/certs/{{ ansible_date_time.epoch }}
+            cp -r /etc/kubernetes/pki/* /backup/certs/{{ ansible_date_time.epoch }}/
+          when: cert_backup | default(true)
+
+        - name: Check certificate expiration
+          shell: |
+            kubeadm certs check-expiration
+          register: cert_status
+
+        - name: Display certificate status
+          debug:
+            var: cert_status.stdout_lines
+
+        - name: Renew all certificates
+          shell: kubeadm certs renew all
+          when: renew_certs | default(false)
+
+    # ==========================================
+    # UPDATE CNI/CSI COMPONENTS
+    # ==========================================
+    - name: Update CNI/CSI Components
+      tags: [cni, csi, network, storage]
+      block:
+        - name: Update CNI plugin
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig }}"
+            state: present
+            src: "{{ cni_manifest }}"
+          when: cni_manifest is defined
+
+        - name: Update CSI driver
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig }}"
+            state: present
+            src: "{{ csi_manifest }}"
+          when: csi_manifest is defined
+
+        - name: Restart CNI pods
+          shell: |
+            kubectl rollout restart daemonset -n kube-system {{ cni_daemonset }}
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          when: cni_daemonset is defined
+
+    # ==========================================
+    # DEBUG FAILING PODS
+    # ==========================================
+    - name: Debug Failing Pods
+      tags: [debug, pods, troubleshoot]
+      block:
+        - name: List failing pods
+          shell: |
+            kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          register: failing_pods
+
+        - name: Get pod details
+          shell: |
+            kubectl describe pod {{ pod_name }} -n {{ namespace }}
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          register: pod_details
+          when: pod_name is defined
+
+        - name: Get pod logs
+          shell: |
+            kubectl logs {{ pod_name }} -n {{ namespace }} {{ '--previous' if previous_logs | default(false) else '' }} --tail={{ log_lines | default(100) }}
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          register: pod_logs
+          when: pod_name is defined
+
+        - name: Get pod events
+          shell: |
+            kubectl get events -n {{ namespace }} --field-selector involvedObject.name={{ pod_name }} --sort-by='.lastTimestamp'
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          register: pod_events
+          when: pod_name is defined
+
+        - name: Display debug information
+          debug:
+            msg:
+              - "Pod Details: {{ pod_details.stdout_lines | default('N/A') }}"
+              - "Pod Logs: {{ pod_logs.stdout_lines | default('N/A') }}"
+              - "Pod Events: {{ pod_events.stdout_lines | default('N/A') }}"
+          when: pod_name is defined
+
+    # ==========================================
+    # LOG/METRIC/TRACING ANALYSIS
+    # ==========================================
+    - name: Analyze Logs and Metrics
+      tags: [logs, metrics, tracing, analysis]
+      block:
+        - name: Query Prometheus metrics
+          uri:
+            url: "{{ prometheus_url }}/api/v1/query"
+            method: GET
+            body_format: json
+            body:
+              query: "{{ prometheus_query }}"
+            return_content: yes
+          register: metrics_result
+          when: prometheus_url is defined and prometheus_query is defined
+
+        - name: Fetch logs from Loki
+          uri:
+            url: "{{ loki_url }}/loki/api/v1/query_range"
+            method: GET
+            body_format: json
+            body:
+              query: "{{ loki_query }}"
+              start: "{{ start_time }}"
+              end: "{{ end_time }}"
+            return_content: yes
+          register: logs_result
+          when: loki_url is defined and loki_query is defined
+
+        - name: Export pod logs to file
+          shell: |
+            kubectl logs {{ pod_name }} -n {{ namespace }} > /tmp/{{ pod_name }}-{{ ansible_date_time.epoch }}.log
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          when: pod_name is defined and export_logs | default(false)
+
+    # ==========================================
+    # MANAGE PVCs & STORAGE EXPANSION
+    # ==========================================
+    - name: Manage PVCs and Storage
+      tags: [pvc, storage, expand]
+      block:
+        - name: List PVCs
+          shell: kubectl get pvc -n {{ namespace }}
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          register: pvc_list
+
+        - name: Expand PVC
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig }}"
+            state: present
+            definition:
+              apiVersion: v1
+              kind: PersistentVolumeClaim
+              metadata:
+                name: "{{ pvc_name }}"
+                namespace: "{{ namespace }}"
+              spec:
+                resources:
+                  requests:
+                    storage: "{{ new_size }}"
+          when: pvc_name is defined and new_size is defined
+
+        - name: Create new PVC
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig }}"
+            state: present
+            definition:
+              apiVersion: v1
+              kind: PersistentVolumeClaim
+              metadata:
+                name: "{{ pvc_name }}"
+                namespace: "{{ namespace }}"
+              spec:
+                accessModes: "{{ access_modes | default(['ReadWriteOnce']) }}"
+                storageClassName: "{{ storage_class }}"
+                resources:
+                  requests:
+                    storage: "{{ storage_size }}"
+          when: pvc_name is defined and storage_size is defined and create_new | default(false)
+
+    # ==========================================
+    # NETWORK POLICIES
+    # ==========================================
+    - name: Apply Network Policies
+      tags: [network, policy, security]
+      block:
+        - name: Create network policy
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig }}"
+            state: present
+            definition:
+              apiVersion: networking.k8s.io/v1
+              kind: NetworkPolicy
+              metadata:
+                name: "{{ policy_name }}"
+                namespace: "{{ namespace }}"
+              spec:
+                podSelector:
+                  matchLabels: "{{ pod_selector | default({}) }}"
+                policyTypes: "{{ policy_types | default(['Ingress', 'Egress']) }}"
+                ingress: "{{ ingress_rules | default([]) }}"
+                egress: "{{ egress_rules | default([]) }}"
+          when: policy_name is defined
+
+        - name: Delete network policy
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig }}"
+            state: absent
+            api_version: networking.k8s.io/v1
+            kind: NetworkPolicy
+            name: "{{ policy_name }}"
+            namespace: "{{ namespace }}"
+          when: policy_name is defined and delete_policy | default(false)
+
+    # ==========================================
+    # TROUBLESHOOT API SERVER
+    # ==========================================
+    - name: Troubleshoot API Server
+      tags: [api-server, troubleshoot]
+      block:
+        - name: Check API server health
+          uri:
+            url: "{{ api_server_url }}/healthz"
+            method: GET
+            validate_certs: no
+          register: api_health
+          ignore_errors: yes
+
+        - name: Check API server logs
+          shell: |
+            kubectl logs -n kube-system -l component=kube-apiserver --tail=100
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          register: api_logs
+
+        - name: Check API server metrics
+          uri:
+            url: "{{ api_server_url }}/metrics"
+            method: GET
+            validate_certs: no
+          register: api_metrics
+          ignore_errors: yes
+          when: api_server_url is defined
+
+        - name: Display API server status
+          debug:
+            msg:
+              - "Health: {{ api_health.status | default('Unknown') }}"
+              - "Logs: {{ api_logs.stdout_lines | default('N/A') }}"
+
+    # ==========================================
+    # RESTART/RECONCILE CONTROLLERS
+    # ==========================================
+    - name: Restart Controllers
+      tags: [controllers, restart, reconcile]
+      block:
+        - name: Restart deployment controller
+          shell: |
+            kubectl rollout restart deployment/{{ controller_name }} -n {{ namespace }}
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          when: controller_name is defined and controller_type == 'deployment'
+
+        - name: Restart daemonset controller
+          shell: |
+            kubectl rollout restart daemonset/{{ controller_name }} -n {{ namespace }}
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          when: controller_name is defined and controller_type == 'daemonset'
+
+        - name: Restart statefulset controller
+          shell: |
+            kubectl rollout restart statefulset/{{ controller_name }} -n {{ namespace }}
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          when: controller_name is defined and controller_type == 'statefulset'
+
+        - name: Delete and recreate pod
+          shell: |
+            kubectl delete pod {{ pod_name }} -n {{ namespace }}
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          when: pod_name is defined and force_recreate | default(false)
+
+    # ==========================================
+    # NODE POOL SCALING
+    # ==========================================
+    - name: Manage Node Pool Scaling
+      tags: [nodepool, scale, nodes]
+      block:
+        - name: Scale node pool (GKE example)
+          shell: |
+            gcloud container clusters resize {{ cluster_name }} \
+              --node-pool {{ node_pool_name }} \
+              --num-nodes {{ num_nodes }} \
+              --zone {{ zone }}
+          when: cloud_provider == 'gke' and cluster_name is defined
+
+        - name: Scale node pool (EKS example)
+          shell: |
+            aws eks update-nodegroup-config \
+              --cluster-name {{ cluster_name }} \
+              --nodegroup-name {{ node_pool_name }} \
+              --scaling-config minSize={{ min_nodes }},maxSize={{ max_nodes }},desiredSize={{ num_nodes }}
+          when: cloud_provider == 'eks' and cluster_name is defined
+
+        - name: Scale node pool (AKS example)
+          shell: |
+            az aks nodepool scale \
+              --resource-group {{ resource_group }} \
+              --cluster-name {{ cluster_name }} \
+              --name {{ node_pool_name }} \
+              --node-count {{ num_nodes }}
+          when: cloud_provider == 'aks' and cluster_name is defined
+
+    # ==========================================
+    # ROTATE SECRETS & CONFIGMAPS
+    # ==========================================
+    - name: Rotate Secrets and ConfigMaps
+      tags: [secrets, configmaps, rotate]
+      block:
+        - name: Backup existing secret
+          shell: |
+            kubectl get secret {{ secret_name }} -n {{ namespace }} -o yaml > /backup/secrets/{{ secret_name }}-{{ ansible_date_time.epoch }}.yaml
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          when: secret_name is defined and backup_secret | default(true)
+
+        - name: Update secret
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig }}"
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: "{{ secret_name }}"
+                namespace: "{{ namespace }}"
+              type: "{{ secret_type | default('Opaque') }}"
+              stringData: "{{ secret_data }}"
+          when: secret_name is defined and secret_data is defined
+
+        - name: Update configmap
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig }}"
+            state: present
+            definition:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: "{{ configmap_name }}"
+                namespace: "{{ namespace }}"
+              data: "{{ configmap_data }}"
+          when: configmap_name is defined and configmap_data is defined
+
+        - name: Restart pods using secret/configmap
+          shell: |
+            kubectl rollout restart deployment -n {{ namespace }} -l {{ label_selector }}
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          when: label_selector is defined and restart_pods | default(false)
+
+    # ==========================================
+    # BACKUP/RESTORE ETCD
+    # ==========================================
+    - name: Backup and Restore etcd
+      tags: [etcd, backup, restore]
+      block:
+        - name: Backup etcd
+          shell: |
+            ETCDCTL_API=3 etcdctl snapshot save /backup/etcd/snapshot-{{ ansible_date_time.epoch }}.db \
+              --endpoints={{ etcd_endpoints | default('https://127.0.0.1:2379') }} \
+              --cacert={{ etcd_ca_cert }} \
+              --cert={{ etcd_cert }} \
+              --key={{ etcd_key }}
+          when: etcd_ca_cert is defined and backup_etcd | default(false)
+
+        - name: Verify etcd backup
+          shell: |
+            ETCDCTL_API=3 etcdctl snapshot status /backup/etcd/snapshot-{{ ansible_date_time.epoch }}.db
+          when: backup_etcd | default(false)
+
+        - name: Restore etcd from backup
+          shell: |
+            ETCDCTL_API=3 etcdctl snapshot restore {{ backup_file }} \
+              --data-dir={{ etcd_data_dir | default('/var/lib/etcd') }}
+          when: backup_file is defined and restore_etcd | default(false)
+
+    # ==========================================
+    # SECURITY PATCHES
+    # ==========================================
+    - name: Apply Security Patches
+      tags: [security, patches, updates]
+      block:
+        - name: Update system packages
+          apt:
+            update_cache: yes
+            upgrade: dist
+          when: ansible_os_family == "Debian"
+
+        - name: Update Kubernetes components
+          shell: |
+            kubectl version --short
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          register: k8s_version
+
+        - name: Apply security policies
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig }}"
+            state: present
+            src: "{{ security_policy_file }}"
+          when: security_policy_file is defined
+
+    # ==========================================
+    # SCAN IMAGES WITH TRIVY
+    # ==========================================
+    - name: Scan Images with Trivy
+      tags: [trivy, scan, security, images]
+      block:
+        - name: Install Trivy
+          shell: |
+            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          args:
+            creates: /usr/local/bin/trivy
+
+        - name: Scan specific image
+          shell: |
+            trivy image {{ image_name }} --severity {{ severity_level | default('HIGH,CRITICAL') }} --format {{ output_format | default('table') }}
+          register: trivy_scan
+          when: image_name is defined
+
+        - name: Scan all images in namespace
+          shell: |
+            kubectl get pods -n {{ namespace }} -o jsonpath='{.items[*].spec.containers[*].image}' | tr ' ' '\n' | sort -u | while read image; do
+              echo "Scanning $image"
+              trivy image "$image" --severity {{ severity_level | default('HIGH,CRITICAL') }}
+            done
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          register: namespace_scan
+          when: scan_namespace | default(false)
+
+        - name: Generate Trivy report
+          shell: |
+            trivy image {{ image_name }} --format json --output /tmp/trivy-report-{{ ansible_date_time.epoch }}.json
+          when: image_name is defined and generate_report | default(false)
+
+        - name: Display scan results
+          debug:
+            var: trivy_scan.stdout_lines
+          when: trivy_scan is defined
+
+    # ==========================================
+    # FIX GITOPS DRIFT
+    # ==========================================
+    - name: Fix GitOps Configuration Drift
+      tags: [gitops, drift, reconcile, argocd, flux]
+      block:
+        - name: Check ArgoCD application sync status
+          shell: |
+            argocd app get {{ app_name }} --refresh
+          register: argocd_status
+          when: gitops_tool == 'argocd' and app_name is defined
+          ignore_errors: yes
+
+        - name: Sync ArgoCD application
+          shell: |
+            argocd app sync {{ app_name }} {{ '--force' if force_sync | default(false) else '' }} {{ '--prune' if prune_resources | default(false) else '' }}
+          when: gitops_tool == 'argocd' and app_name is defined and sync_app | default(false)
+
+        - name: Check Flux reconciliation
+          shell: |
+            flux get kustomizations
+          register: flux_status
+          when: gitops_tool == 'flux'
+
+        - name: Force Flux reconciliation
+          shell: |
+            flux reconcile kustomization {{ kustomization_name }} --with-source
+          when: gitops_tool == 'flux' and kustomization_name is defined
+
+        - name: Detect drift between cluster and Git
+          shell: |
+            kubectl diff -f {{ git_manifest_path }}
+          environment:
+            KUBECONFIG: "{{ kubeconfig }}"
+          register: drift_detection
+          ignore_errors: yes
+          when: git_manifest_path is defined
+
+        - name: Apply manifests from Git
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig }}"
+            state: present
+            src: "{{ git_manifest_path }}"
+          when: git_manifest_path is defined and apply_manifests | default(false)
+
+        - name: Display drift status
+          debug:
+            msg:
+              - "ArgoCD Status: {{ argocd_status.stdout_lines | default('N/A') }}"
+              - "Flux Status: {{ flux_status.stdout_lines | default('N/A') }}"
+              - "Drift: {{ drift_detection.stdout_lines | default('N/A') }}"

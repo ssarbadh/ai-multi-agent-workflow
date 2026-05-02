@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+venv/
+.venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+
+# Data (keep configs, ignore runtime data)
+data/*.db
+data/*.sqlite
+data/logs/
+data/cache/
+# Keep data configs and templates
+!data/
+!data/.gitkeep
+!data/*.json
+!data/*.yaml
+!data/*.yml
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Grafana
+grafana/data/
+
+# Prometheus
+prometheus/data/

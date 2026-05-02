@@ -1,0 +1,89 @@
+# FastAPI & Server
+fastapi[standard]==0.115.0
+uvicorn[standard]==0.32.0
+python-multipart==0.0.12
+python-jose[cryptography]==3.3.0
+pydantic==2.9.2
+pydantic-settings==2.5.2
+
+# Haystack & RAG - COMPATIBLE VERSIONS
+# pgvector-haystack 5.5.0 requires haystack-ai>=2.11.0
+haystack-ai>=2.11.0
+pgvector-haystack==5.5.0
+sentence-transformers==3.3.0
+
+# Celery & Task Queue (Latest stable)
+celery[redis]==5.4.0
+flower==2.0.1
+
+# Database
+psycopg2-binary==2.9.10
+asyncpg==0.30.0
+sqlalchemy[asyncio]==2.0.36
+alembic==1.14.0
+pgvector==0.3.5
+
+# Redis
+redis==5.2.0
+hiredis==3.0.0
+
+# Google Drive
+google-api-python-client==2.154.0
+google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.2.1
+
+# Google Generative AI (Gemini)
+google-generativeai==0.8.3
+
+# Haystack Google AI Integration - COMPATIBLE VERSION
+google-ai-haystack>=5.0.0
+
+# Document Processing
+pypdf==5.1.0
+python-docx==1.1.2
+markdown==3.7
+beautifulsoup4==4.12.3
+chardet==5.2.0
+
+# Embeddings & NLP
+transformers==4.46.0
+torch==2.5.1
+tokenizers==0.20.3
+numpy==2.1.3
+
+# HTTP Client
+httpx==0.27.2
+aiohttp==3.11.7
+
+# Observability
+opentelemetry-api==1.28.2
+opentelemetry-sdk==1.28.2
+opentelemetry-instrumentation-fastapi==0.49b2
+opentelemetry-instrumentation-sqlalchemy==0.49b2
+opentelemetry-instrumentation-redis==0.49b2
+opentelemetry-instrumentation-httpx==0.49b2
+opentelemetry-exporter-otlp==1.28.2
+opentelemetry-exporter-otlp-proto-grpc==1.28.2
+opentelemetry-exporter-prometheus==0.49b2
+prometheus-client==0.21.0
+
+# Logging
+structlog==24.4.0
+python-json-logger==3.2.1
+
+# Utilities
+python-dotenv==1.0.1
+tenacity==9.0.0
+tqdm==4.67.1
+click==8.1.7
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-cov==6.0.0
+faker==33.1.0
+
+# Development
+black==24.10.0
+ruff==0.8.4
+mypy==1.13.0

@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  mcp:
+    build: .
+    container_name: aegisops-mcp
+    ports:
+      - "8005:8005"
+    environment:
+      - SERVICE_NAME=aegisops-mcp
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - LOG_LEVEL=INFO
+      - API_HOST=0.0.0.0
+      - API_PORT=8005
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - AGENT_ORCHESTRATION_URL=http://host.docker.internal:8002
+      - CONTEXT_MANAGEMENT_URL=http://host.docker.internal:8000
+      - RAG_SERVICE_URL=http://host.docker.internal:8001
+      - OBSERVABILITY_URL=http://host.docker.internal:8003
+      - USER_MANAGEMENT_URL=http://host.docker.internal:8004
+      - PROMETHEUS_MCP_ENABLED=${PROMETHEUS_MCP_ENABLED:-false}
+      - PROMETHEUS_MCP_URL=${PROMETHEUS_MCP_URL:-http://host.docker.internal:8080}
+      - PROMETHEUS_MCP_BEARER_TOKEN=${PROMETHEUS_MCP_BEARER_TOKEN:-}
+      - NEWRELIC_MCP_ENABLED=${NEWRELIC_MCP_ENABLED:-false}
+      - NEWRELIC_MCP_URL=${NEWRELIC_MCP_URL:-https://mcp.newrelic.com}
+      - NEWRELIC_MCP_BEARER_TOKEN=${NEWRELIC_MCP_BEARER_TOKEN:-}
+      - ALERTMANAGER_MCP_ENABLED=${ALERTMANAGER_MCP_ENABLED:-false}
+      - ALERTMANAGER_MCP_URL=${ALERTMANAGER_MCP_URL:-http://host.docker.internal:8008}
+      - ALERTMANAGER_MCP_USERNAME=${ALERTMANAGER_MCP_USERNAME:-}
+      - ALERTMANAGER_MCP_PASSWORD=${ALERTMANAGER_MCP_PASSWORD:-}
+      - ALERTMANAGER_MCP_BEARER_TOKEN=${ALERTMANAGER_MCP_BEARER_TOKEN:-}
+      - SERVICENOW_MCP_ENABLED=${SERVICENOW_MCP_ENABLED:-false}
+      - SNOW_INSTANCE_URL=${SNOW_INSTANCE_URL:-}
+      - SNOW_USERNAME=${SNOW_USERNAME:-}
+      - SNOW_PASSWORD=${SNOW_PASSWORD:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - aegisops-network
+
+networks:
+  aegisops-network:
+    driver: bridge

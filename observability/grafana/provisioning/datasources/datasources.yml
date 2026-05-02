@@ -1,0 +1,33 @@
+# Grafana datasource provisioning for AegisOps
+
+apiVersion: 1
+
+datasources:
+  # Prometheus - primary metrics store
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: "15s"
+      httpMethod: POST
+
+  # Alertmanager - for alert state
+  - name: Alertmanager
+    type: alertmanager
+    access: proxy
+    url: http://alertmanager:9093
+    editable: false
+    jsonData:
+      implementation: prometheus
+
+  # AegisOps Observability API - custom metrics
+  - name: AegisOps-API
+    type: prometheus
+    access: proxy
+    url: http://observability:9103
+    editable: false
+    jsonData:
+      timeInterval: "15s"

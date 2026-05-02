@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  observability:
+    build: .
+    ports:
+      - "8003:8003"
+      - "9103:9103"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/observability
+      - REDIS_URL=redis://redis:6379/3
+      - PROMETHEUS_URL=http://prometheus:9090
+      - ALERTMANAGER_URL=http://alertmanager:9093
+      - OTEL_COLLECTOR_ENDPOINT=http://otel-collector:4317
+      - OTEL_ENABLED=true
+      - AGENT_ORCHESTRATION_URL=http://agent-orchestration:8002
+      - CONTEXT_MANAGEMENT_URL=http://context-management:8000
+      - RAG_URL=http://rag:8001
+    depends_on:
+      - postgres
+      - redis
+      - prometheus
+      - otel-collector
+    networks:
+      - aegisops
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.91.0
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8888:8888"   # Prometheus metrics (collector)
+      - "8889:8889"   # Prometheus exporter
+      - "13133:13133" # Health check
+      - "55679:55679" # zPages
+    volumes:
+      - ./otel-collector/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    networks:
+      - aegisops
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/rules:/etc/prometheus/rules
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    networks:
+      - aegisops
+
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    networks:
+      - aegisops
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - aegisops
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=observability
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - aegisops
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - aegisops
+
+networks:
+  aegisops:
+    external: true
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  postgres_data:

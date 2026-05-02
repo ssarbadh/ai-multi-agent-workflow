@@ -1,0 +1,40 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cartography-viewer
+rules:
+# Namespaces - list for namespace sync, get for kube-system cluster metadata
+- apiGroups: [""]
+  resources:
+    - namespaces
+  verbs: ["get", "list"]
+# Core resources - list only
+- apiGroups: [""]
+  resources:
+    - pods
+    - services
+    - serviceaccounts
+  verbs: ["list"]
+# Secrets - list only, no read access
+- apiGroups: [""]
+  resources:
+    - secrets
+  verbs: ["list"]
+# RBAC resources
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources:
+    - roles
+    - rolebindings
+    - clusterroles
+    - clusterrolebindings
+  verbs: ["list"]
+# Networking resources
+- apiGroups: ["networking.k8s.io"]
+  resources:
+    - ingresses
+  verbs: ["list"]
+# ConfigMaps - read aws-auth identity mapping
+- apiGroups: [""]
+  resources:
+    - configmaps
+  verbs: ["get"]

@@ -1,0 +1,67 @@
+prompts:
+  context_aggregation_agent:
+    id: "sre.context_aggregation"
+    version: "1.0.0"
+    owner: "sre-platform"
+    system_template: "context_aggregation_agent.system.md"
+    user_template: "context_aggregation_agent.user.md"
+  rca_agent:
+    id: "sre.rca"
+    version: "1.1.1"
+    owner: "sre-platform"
+    system_template: "rca_agent.system.md"
+    user_template: "rca_agent.user.md"
+  critique_agent:
+    id: "sre.critique"
+    version: "1.0.0"
+    owner: "sre-platform"
+    system_template: "critique_agent.system.md"
+    user_template: "critique_agent.user.md"
+  additional_context_aggregation_agent:
+    id: "sre.additional_context_aggregation"
+    version: "1.0.1"
+    owner: "sre-platform"
+    system_template: "additional_context_aggregation_agent.system.md"
+    user_template: "additional_context_aggregation_agent.user.md"
+  rca_agent_recompute:
+    id: "sre.rca_recompute"
+    version: "1.1.1"
+    owner: "sre-platform"
+    system_template: "rca_agent_recompute.system.md"
+    user_template: "rca_agent_recompute.user.md"
+  remediation_plan:
+    id: "sre.remediation_plan"
+    version: "1.1.0"
+    owner: "sre-platform"
+    system_template: "remediation_plan.system.md"
+    user_template: "remediation_plan.user.md"
+  confidence_scoring_agent:
+    id: "sre.confidence_scoring"
+    version: "1.1.1"
+    owner: "sre-platform"
+    system_template: "confidence_scoring_agent.system.md"
+    user_template: "confidence_scoring_agent.user.md"
+  web_search_agent:
+    id: "sre.web_search"
+    version: "1.0.0"
+    owner: "sre-platform"
+    system_template: "web_search_agent.system.md"
+    user_template: "web_search_agent.user.md"
+  human_approval_agent:
+    id: "sre.human_approval"
+    version: "1.0.0"
+    owner: "sre-platform"
+    system_template: "human_approval_agent.system.md"
+    user_template: "human_approval_agent.user.md"
+  remediation_execution_agent:
+    id: "sre.remediation_execution"
+    version: "1.0.0"
+    owner: "sre-platform"
+    system_template: "remediation_execution_agent.system.md"
+    user_template: "remediation_execution_agent.user.md"
+  context_graph_update_agent:
+    id: "sre.context_graph_update"
+    version: "1.0.0"
+    owner: "sre-platform"
+    system_template: "context_graph_update_agent.system.md"
+    user_template: "context_graph_update_agent.user.md"

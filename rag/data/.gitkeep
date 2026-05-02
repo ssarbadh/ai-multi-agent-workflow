@@ -1,0 +1,2 @@
+# This directory is for temporary data storage during development
+# Production deployments should use external storage (S3, GCS, etc.)

@@ -1,0 +1,158 @@
+groups:
+  - name: rag-evaluation-alerts
+    rules:
+      - alert: RAGFaithfulnessLow
+        expr: rag_evaluation_score{metric_type="faithfulness"} < 0.8
+        for: 5m
+        labels:
+          severity: warning
+          service: rag
+        annotations:
+          summary: "RAG faithfulness score is below threshold"
+          description: "RAG faithfulness score is {{ $value | humanizePercentage }}, which is below the 80% threshold"
+
+      - alert: RAGHallucinationHigh
+        expr: (1 - rag_evaluation_score{metric_type="faithfulness"}) > 0.15
+        for: 5m
+        labels:
+          severity: critical
+          service: rag
+        annotations:
+          summary: "RAG hallucination rate is too high"
+          description: "RAG hallucination rate is {{ $value | humanizePercentage }}, which exceeds the 15% threshold"
+
+      - alert: RAGContextRelevanceLow
+        expr: rag_evaluation_score{metric_type="context_relevance"} < 0.7
+        for: 10m
+        labels:
+          severity: warning
+          service: rag
+        annotations:
+          summary: "RAG context relevance is low"
+          description: "RAG context relevance score is {{ $value | humanizePercentage }}, indicating poor document retrieval"
+
+      - alert: RAGResponseTimeSlow
+        expr: histogram_quantile(0.95, rate(rag_query_duration_seconds_bucket[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: rag
+        annotations:
+          summary: "RAG response time is slow"
+          description: "95th percentile RAG response time is {{ $value }}s, which exceeds 10s threshold"
+
+      - alert: RAGQueryFailureRateHigh
+        expr: rate(rag_queries_total{status="error"}[5m]) / rate(rag_queries_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: rag
+        annotations:
+          summary: "RAG query failure rate is high"
+          description: "RAG query failure rate is {{ $value | humanizePercentage }}, which exceeds 5% threshold"
+
+      - alert: RAGCostPerQueryHigh
+        expr: histogram_quantile(0.95, rate(rag_cost_per_query_usd_bucket[5m])) > 0.10
+        for: 10m
+        labels:
+          severity: warning
+          service: rag
+        annotations:
+          summary: "RAG cost per query is high"
+          description: "95th percentile cost per query is ${{ $value }}, which exceeds $0.10 threshold"
+
+  - name: rag-performance-alerts
+    rules:
+      - alert: RAGEmbeddingGenerationSlow
+        expr: histogram_quantile(0.95, rate(embedding_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: rag
+        annotations:
+          summary: "RAG embedding generation is slow"
+          description: "95th percentile embedding generation time is {{ $value }}s, which exceeds 2s threshold"
+
+      - alert: RAGVectorSearchSlow
+        expr: histogram_quantile(0.95, rate(vector_search_duration_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: rag
+        annotations:
+          summary: "RAG vector search is slow"
+          description: "95th percentile vector search time is {{ $value }}s, which exceeds 1s threshold"
+
+      - alert: RAGLLMRequestSlow
+        expr: histogram_quantile(0.95, rate(llm_request_duration_seconds_bucket[5m])) > 30
+        for: 5m
+        labels:
+          severity: warning
+          service: rag
+        annotations:
+          summary: "RAG LLM requests are slow"
+          description: "95th percentile LLM request time is {{ $value }}s, which exceeds 30s threshold"
+
+      - alert: RAGConcurrentQueriesHigh
+        expr: rag_concurrent_queries > 20
+        for: 2m
+        labels:
+          severity: warning
+          service: rag
+        annotations:
+          summary: "High number of concurrent RAG queries"
+          description: "{{ $value }} concurrent RAG queries are being processed, which may impact performance"
+
+  - name: rag-system-alerts
+    rules:
+      - alert: RAGServiceDown
+        expr: up{job="rag"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: rag
+        annotations:
+          summary: "RAG service is down"
+          description: "RAG service has been down for more than 1 minute"
+
+      - alert: RAGDatabaseConnectionFailed
+        expr: db_connections_active == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: rag
+        annotations:
+          summary: "RAG database connection failed"
+          description: "RAG service has no active database connections"
+
+      - alert: RAGCacheHitRateLow
+        expr: rate(cache_hits_total[5m]) / (rate(cache_hits_total[5m]) + rate(cache_misses_total[5m])) < 0.5
+        for: 10m
+        labels:
+          severity: warning
+          service: rag
+        annotations:
+          summary: "RAG cache hit rate is low"
+          description: "RAG cache hit rate is {{ $value | humanizePercentage }}, which is below 50%"
+
+  - name: rag-evaluation-continuous
+    rules:
+      - alert: RAGEvaluationStale
+        expr: time() - timestamp(rag_evaluation_score) > 3600
+        for: 5m
+        labels:
+          severity: warning
+          service: rag
+        annotations:
+          summary: "RAG evaluation metrics are stale"
+          description: "RAG evaluation metrics haven't been updated for over 1 hour"
+
+      - alert: RAGAnswerCompletenessPoor
+        expr: rag_evaluation_score{metric_type="completeness"} < 0.6
+        for: 10m
+        labels:
+          severity: warning
+          service: rag
+        annotations:
+          summary: "RAG answer completeness is poor"
+          description: "RAG answer completeness score is {{ $value | humanizePercentage }}, indicating incomplete responses"

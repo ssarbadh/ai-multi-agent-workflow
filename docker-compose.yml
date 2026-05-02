@@ -1,0 +1,639 @@
+# ===================================
+# AegisOps Master Docker Compose
+# GCP Cloud Deployment Version
+# ===================================
+
+services:
+  # ===================================
+  # INFRASTRUCTURE SERVICES
+  # ===================================
+  neo4j:
+    image: neo4j:5.14
+    container_name: aegisops-neo4j
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      # Memory for Cartography (K8s sync): heap + page cache. Increase if OOM (exit 137).
+      NEO4J_dbms_memory_heap_max__size: ${NEO4J_HEAP_SIZE:-4G}
+      NEO4J_dbms_memory_pagecache_size: ${NEO4J_PAGE_CACHE_SIZE:-2G}
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    mem_limit: 8g
+    shm_size: "256m"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aegisops-network
+      - aegisops-shared
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:23.0
+    container_name: aegisops-keycloak
+    command: start-dev --import-realm
+    environment:
+      - KEYCLOAK_ADMIN=${KEYCLOAK_ADMIN_USERNAME}
+      - KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD}
+      - KC_DB=postgres
+      - KC_DB_URL=jdbc:postgresql://${PGHOST}:${PGPORT}/${PGDATABASE}
+      - KC_DB_USERNAME=${PGUSER}
+      - KC_DB_PASSWORD=${PGPASSWORD}
+      - KC_HEALTH_ENABLED=true
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./user-management/keycloak:/opt/keycloak/data/import
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - aegisops-network
+
+  # ===================================
+  # BACKEND SERVICES
+  # ===================================
+  context-management:
+    build: ./context-management
+    container_name: aegisops-context-management
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}
+      - POSTGRES_HOST=${PGHOST}
+      - POSTGRES_PORT=${PGPORT}
+      - POSTGRES_USER=${PGUSER}
+      - POSTGRES_PASSWORD=${PGPASSWORD}
+      - POSTGRES_DB=${PGDATABASE}
+      - REDIS_URL=redis://${REDIS_HOST}:${REDIS_PORT}/0
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+      - NEO4J_URI=neo4j://neo4j:7687
+      - NEO4J_USER=${NEO4J_USER}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - CONTEXT_LLM_PROVIDER=${CONTEXT_LLM_PROVIDER}
+      - CONTEXT_LLM_MODEL=${CONTEXT_LLM_MODEL}
+      - ENVIRONMENT=${ENVIRONMENT}
+      - DEBUG=${DEBUG}
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    volumes:
+      - context_data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/v1/health\")' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - aegisops-network
+
+  rag:
+    build: ./rag
+    container_name: aegisops-rag
+    # So host.docker.internal resolves on Linux Docker (matches PGHOST/REDIS_HOST pattern)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8001:8001"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}
+      - POSTGRES_CONNECTION_STRING=postgresql://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}
+      - REDIS_URL=redis://${REDIS_HOST}:${REDIS_PORT}/1
+      - RAG_API_HOST=0.0.0.0
+      - RAG_API_PORT=8001
+      - SECRET_KEY=${SECRET_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GOOGLE_SERVICE_ACCOUNT_JSON=${GOOGLE_SERVICE_ACCOUNT_JSON}
+      - GOOGLE_DRIVE_FOLDER_ID=${GOOGLE_DRIVE_FOLDER_ID}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL}
+      - RAG_LLM_PROVIDER=${RAG_LLM_PROVIDER}
+      - RAG_LLM_MODEL=${RAG_LLM_MODEL}
+      - RAG_LLM_TEMPERATURE=${RAG_LLM_TEMPERATURE}
+      - RAG_LLM_MAX_TOKENS=${RAG_LLM_MAX_TOKENS}
+    volumes:
+      - rag_data:/app/data
+      - ./rag-ingestion-494113-6e05494ff377.json:/app/rag-ingestion-494113-6e05494ff377.json:ro
+      # If GOOGLE_SERVICE_ACCOUNT_JSON is a path inside the container (default: google-service-account.json), add:
+      # - ${GOOGLE_SERVICE_ACCOUNT_HOST_PATH}:/app/google-service-account.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8001/health\")' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - aegisops-network
+      - aegisops-shared
+
+  # Consumes Celery queue "indexing" for POST /reindex and Drive ingestion (same env/Redis DB /1 as rag API).
+  rag-celery-indexing:
+    build: ./rag
+    container_name: aegisops-rag-celery-indexing
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: celery -A app.celery_app worker --loglevel=info --queues=indexing --concurrency=2 --max-tasks-per-child=100
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}
+      - POSTGRES_CONNECTION_STRING=postgresql://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}
+      - REDIS_URL=redis://${REDIS_HOST}:${REDIS_PORT}/1
+      - SECRET_KEY=${SECRET_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GOOGLE_SERVICE_ACCOUNT_JSON=${GOOGLE_SERVICE_ACCOUNT_JSON}
+      - GOOGLE_DRIVE_FOLDER_ID=${GOOGLE_DRIVE_FOLDER_ID}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL}
+      - RAG_LLM_PROVIDER=${RAG_LLM_PROVIDER}
+      - RAG_LLM_MODEL=${RAG_LLM_MODEL}
+      - RAG_LLM_TEMPERATURE=${RAG_LLM_TEMPERATURE}
+      - RAG_LLM_MAX_TOKENS=${RAG_LLM_MAX_TOKENS}
+    volumes:
+      - rag_data:/app/data
+      - ./rag-ingestion-494113-6e05494ff377.json:/app/rag-ingestion-494113-6e05494ff377.json:ro
+    restart: unless-stopped
+    networks:
+      - aegisops-network
+      - aegisops-shared
+
+  # Optional: batch embedding queue (separate from indexing pipeline embeds, but used if tasks enqueue here).
+  rag-celery-embedding:
+    build: ./rag
+    container_name: aegisops-rag-celery-embedding
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: celery -A app.celery_app worker --loglevel=info --queues=embedding --concurrency=4 --max-tasks-per-child=50 --pool=threads
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}
+      - POSTGRES_CONNECTION_STRING=postgresql://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}
+      - REDIS_URL=redis://${REDIS_HOST}:${REDIS_PORT}/1
+      - SECRET_KEY=${SECRET_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GOOGLE_SERVICE_ACCOUNT_JSON=${GOOGLE_SERVICE_ACCOUNT_JSON}
+      - GOOGLE_DRIVE_FOLDER_ID=${GOOGLE_DRIVE_FOLDER_ID}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL}
+      - RAG_LLM_PROVIDER=${RAG_LLM_PROVIDER}
+      - RAG_LLM_MODEL=${RAG_LLM_MODEL}
+      - RAG_LLM_TEMPERATURE=${RAG_LLM_TEMPERATURE}
+      - RAG_LLM_MAX_TOKENS=${RAG_LLM_MAX_TOKENS}
+    volumes:
+      - rag_data:/app/data
+      - ./rag-ingestion-494113-6e05494ff377.json:/app/rag-ingestion-494113-6e05494ff377.json:ro
+    restart: unless-stopped
+    networks:
+      - aegisops-network
+      - aegisops-shared
+
+  agent-orchestration:
+    build: ./agent-orchestration
+    container_name: aegisops-agent-orchestration
+    ports:
+      - "8002:8002"
+      - "9002:9002"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}
+      - REDIS_URL=${REDIS_URL}
+      - CONTEXT_MGMT_URL=http://context-management:8000
+      - RAG_SERVICE_URL=http://rag:8001
+      - MCP_SERVICE_URL=http://mcp:8005
+      - MCP_API_KEY=${MCP_API_KEY:-dev-mcp-key}
+      - MCP_API_KEY_HEADER=${MCP_API_KEY_HEADER:-X-API-Key}
+      - OBSERVABILITY_SERVICE_URL=http://observability:8003
+      - USER_MANAGEMENT_URL=http://user-management:8004
+      - LLM_MODEL=${LLM_MODEL}
+      - LLM_PROVIDER=${LLM_PROVIDER}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION}
+      # K8s client (mounted kubeconfig). Context must match KUBECONFIG_HOST_PATH file.
+      - K8S_CONFIG_PATH=/root/.kube/config
+      - K8S_CONTEXT=${K8S_CONTEXT:-static-context}
+      - KUBECONFIG_BASE64=${KUBECONFIG_BASE64:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SNOW_INSTANCE_URL=${SNOW_INSTANCE_URL}
+      - SNOW_USERNAME=${SNOW_USERNAME}
+      - SNOW_PASSWORD=${SNOW_PASSWORD}
+      - VMWARE_HOST=${VMWARE_HOST}
+      - VMWARE_USERNAME=${VMWARE_USERNAME}
+      - VMWARE_PASSWORD=${VMWARE_PASSWORD}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_USERNAME=${SMTP_USERNAME}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL}
+    volumes:
+      - agent_data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Same kubeconfig as MCP / Cartography (see KUBECONFIG_HOST_PATH in .env)
+      - ${KUBECONFIG_HOST_PATH:-/Users/sohamsarbadhikari/workstation/aegisops/eks-static-access/kubeconfig}:/root/.kube/config:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8002/api/v1/health\")' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - aegisops-network
+
+  mcp:
+    build: ./mcp
+    container_name: aegisops-mcp
+    ports:
+      - "8005:8005"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}
+      - REDIS_URL=redis://agent-orchestration-redis:6379/5
+      - REDIS_HOST=agent-orchestration-redis
+      - REDIS_PORT=6379
+      - REDIS_DB=5
+      - AGENT_ORCHESTRATION_URL=http://agent-orchestration:8002
+      - CONTEXT_MANAGEMENT_URL=http://context-management:8000
+      - RAG_SERVICE_URL=http://rag:8001
+      - OBSERVABILITY_URL=http://observability:8003
+      - USER_MANAGEMENT_URL=http://user-management:8004
+      - PROMETHEUS_MCP_ENABLED=${PROMETHEUS_MCP_ENABLED:-true}
+      - PROMETHEUS_MCP_URL=${PROMETHEUS_URL}
+      - PROMETHEUS_MCP_TIMEOUT_SECONDS=${PROMETHEUS_MCP_TIMEOUT_SECONDS:-30}
+      - PROMETHEUS_MCP_BEARER_TOKEN=${PROMETHEUS_MCP_BEARER_TOKEN}
+      - NEWRELIC_MCP_ENABLED=${NEWRELIC_MCP_ENABLED:-false}
+      - NEWRELIC_MCP_URL=${NEWRELIC_MCP_URL:-https://mcp.newrelic.com}
+      - NEWRELIC_MCP_TIMEOUT_SECONDS=${NEWRELIC_MCP_TIMEOUT_SECONDS:-30}
+      - NEWRELIC_MCP_BEARER_TOKEN=${NEWRELIC_MCP_BEARER_TOKEN}
+      - ALERTMANAGER_MCP_ENABLED=${ALERTMANAGER_MCP_ENABLED:-false}
+      - ALERTMANAGER_MCP_URL=${ALERTMANAGER_URL}
+      - ALERTMANAGER_MCP_TIMEOUT_SECONDS=${ALERTMANAGER_MCP_TIMEOUT_SECONDS:-30}
+      - ALERTMANAGER_MCP_BEARER_TOKEN=${ALERTMANAGER_MCP_BEARER_TOKEN}
+      - ALERTMANAGER_MCP_USERNAME=${ALERTMANAGER_MCP_USERNAME}
+      - ALERTMANAGER_MCP_PASSWORD=${ALERTMANAGER_MCP_PASSWORD}
+      - QUICKWIT_ENABLED=${QUICKWIT_ENABLED:-true}
+      - QUICKWIT_DEV_URL=${QUICKWIT_DEV_URL}
+      - QUICKWIT_PROD_URL=${QUICKWIT_PROD_URL}
+      - QUICKWIT_TIMEOUT_SECONDS=${QUICKWIT_TIMEOUT_SECONDS:-30}
+      - QUICKWIT_MAX_HITS=${QUICKWIT_MAX_HITS:-50}
+      - ELASTICSEARCH_MCP_ENABLED=${ELASTICSEARCH_MCP_ENABLED:-true}
+      - ELASTICSEARCH_MCP_URL=${ELASTICSEARCH_MCP_URL}
+      - ELASTICSEARCH_MCP_TIMEOUT_SECONDS=${ELASTICSEARCH_MCP_TIMEOUT_SECONDS:-30}
+      - ELASTICSEARCH_MCP_VERIFY_TLS=${ELASTICSEARCH_MCP_VERIFY_TLS:-false}
+      - ELASTICSEARCH_MCP_USERNAME=${ELASTICSEARCH_MCP_USERNAME}
+      - ELASTICSEARCH_MCP_PASSWORD=${ELASTICSEARCH_MCP_PASSWORD}
+      - ELASTICSEARCH_MCP_API_KEY=${ELASTICSEARCH_MCP_API_KEY}
+      - ELASTICSEARCH_MCP_MAX_HITS=${ELASTICSEARCH_MCP_MAX_HITS:-50}
+      - ISTIO_MCP_ENABLED=${ISTIO_MCP_ENABLED:-true}
+      - ISTIO_MCP_KUBECONFIG_PATH=${ISTIO_MCP_KUBECONFIG_PATH:-/home/appuser/.kube/config}
+      - ISTIO_MCP_CONTEXT=${ISTIO_MCP_CONTEXT:-}
+      - ISTIO_MCP_IN_CLUSTER=${ISTIO_MCP_IN_CLUSTER:-false}
+      - KUBERNETES_MCP_ENABLED=${KUBERNETES_MCP_ENABLED:-true}
+      # flux = Flux159 (kubernetes-mcp:8080); containers = ghcr.io/containers/kubernetes-mcp-server (kubernetes-mcp-native:8080)
+      - KUBERNETES_MCP_BACKEND=${KUBERNETES_MCP_BACKEND:-flux}
+      - KUBERNETES_MCP_URL=${KUBERNETES_MCP_URL:-http://kubernetes-mcp:8080}
+      - KUBERNETES_MCP_TIMEOUT_SECONDS=${KUBERNETES_MCP_TIMEOUT_SECONDS:-30}
+      - KUBERNETES_MCP_BEARER_TOKEN=${KUBERNETES_MCP_BEARER_TOKEN:-}
+      - KUBERNETES_MCP_EXPOSE_UPSTREAM_TOOLS=${KUBERNETES_MCP_EXPOSE_UPSTREAM_TOOLS:-true}
+      - KUBERNETES_MCP_UPSTREAM_INCLUDE_DESTRUCTIVE=${KUBERNETES_MCP_UPSTREAM_INCLUDE_DESTRUCTIVE:-true}
+      - KUBERNETES_MCP_LOCAL_WRITE_ENABLED=${KUBERNETES_MCP_LOCAL_WRITE_ENABLED:-false}
+      - KUBERNETES_MCP_LOCAL_KUBECONFIG_PATH=${KUBERNETES_MCP_LOCAL_KUBECONFIG_PATH:-/home/appuser/.kube/config}
+      - KUBERNETES_MCP_LOCAL_CONTEXT=${KUBERNETES_MCP_LOCAL_CONTEXT:-}
+      - AWS_MCP_ENABLED=${AWS_MCP_ENABLED:-true}
+      - AWS_MCP_URL=${AWS_MCP_URL:-http://aws-mcp:8080}
+      - AWS_MCP_TIMEOUT_SECONDS=${AWS_MCP_TIMEOUT_SECONDS:-30}
+      - AWS_MCP_BEARER_TOKEN=${AWS_MCP_BEARER_TOKEN:-}
+      - GRAPH_MCP_ENABLED=${GRAPH_MCP_ENABLED:-true}
+      - GRAPH_MCP_NEO4J_URI=${GRAPH_MCP_NEO4J_URI:-bolt://neo4j:7687}
+      - GRAPH_MCP_NEO4J_USER=${GRAPH_MCP_NEO4J_USER:-${NEO4J_USER}}
+      - GRAPH_MCP_NEO4J_PASSWORD=${GRAPH_MCP_NEO4J_PASSWORD:-${NEO4J_PASSWORD}}
+      - GRAPH_MCP_NEO4J_DATABASE=${GRAPH_MCP_NEO4J_DATABASE:-neo4j}
+      - GRAPH_ENRICHMENT_PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
+      - GRAPH_ENRICHMENT_ISTIO_NAMESPACE=${GRAPH_ENRICHMENT_ISTIO_NAMESPACE:-default}
+      - GRAPH_ENRICHMENT_ISTIO_CLUSTER_WIDE=${GRAPH_ENRICHMENT_ISTIO_CLUSTER_WIDE:-false}
+      - GRAPH_ENRICHMENT_MCP_URL=${GRAPH_ENRICHMENT_MCP_URL:-http://localhost:8005}
+      - GRAPH_ENRICHMENT_MCP_API_KEY=${GRAPH_ENRICHMENT_MCP_API_KEY:-${MCP_API_KEY:-}}
+      - SERVICENOW_MCP_ENABLED=${SERVICENOW_MCP_ENABLED:-false}
+      - SERVICENOW_MCP_TIMEOUT_SECONDS=${SERVICENOW_MCP_TIMEOUT_SECONDS:-30}
+      - SNOW_INSTANCE_URL=${SNOW_INSTANCE_URL}
+      - SNOW_USERNAME=${SNOW_USERNAME}
+      - SNOW_PASSWORD=${SNOW_PASSWORD}
+      - API_KEYS=["${MCP_API_KEY:-dev-mcp-key}"]
+      - ENVIRONMENT=${ENVIRONMENT}
+    volumes:
+      # Mount kubeconfig file for Istio MCP (see KUBECONFIG_HOST_PATH in .env)
+      - ${KUBECONFIG_HOST_PATH:-../eks-static-access/kubeconfig}:/home/appuser/.kube/config:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8005/api/v1/health\")' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - aegisops-network
+      - aegisops-shared
+
+  # Cartography: ingests K8s/AWS infra into Neo4j, then exits. Schedule via cron:
+  #   0 * * * * cd /path/to/aegisops-prod && docker compose run --rm cartography
+  # Or Kubernetes CronJob. Enrichment (Prometheus+logs) is triggered via POST /api/v1/graph/load
+  cartography:
+    build: ./cartography
+    image: aegisops-cartography:latest
+    container_name: aegisops-cartography
+    init: true
+    restart: "no"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    volumes:
+      - ${KUBECONFIG_HOST_PATH:-../eks-static-access/kubeconfig}:/var/cartography/.kube/config:ro
+      - ${HOME}/.aws:/var/cartography/.aws:ro
+    environment:
+      - NEO4J_USER=${NEO4J_USER}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
+      # AWS profile for boto3 (default: nonprod). EKS auth also uses this.
+      - AWS_PROFILE=${CARTOGRAPHY_AWS_PROFILE:-nonprod}
+      - CARTOGRAPHY_AWS_PROFILE=${CARTOGRAPHY_AWS_PROFILE:-nonprod}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_REGION=${AWS_REGION:-eu-west-1}
+      # Cartography AWS scope: comma-separated regions (--aws-regions). Default eu-west-1 only.
+      - CARTOGRAPHY_AWS_REGIONS=${CARTOGRAPHY_AWS_REGIONS:-eu-west-1}
+      # Selective AWS sync (valid IDs; use ec2:network_acls not ec2:network_acl)
+      - CARTOGRAPHY_AWS_REQUESTED_SYNCS=${CARTOGRAPHY_AWS_REQUESTED_SYNCS:-ec2:instance,ec2:subnet,ec2:security_group,ec2:route_table,ec2:network_acls,ec2:network_interface,ec2:vpc_endpoint,ec2:load_balancer,ec2:load_balancer_v2,rds,elasticache}
+      # Sync only this k8s context 
+      - CARTOGRAPHY_K8S_CONTEXT=${CARTOGRAPHY_K8S_CONTEXT:-static-context}
+      # Ingress: Cartography sync_ingress lists ingresses in all namespaces. The kubeconfig identity must
+      # have cluster-wide list on networking.k8s.io/ingresses (see cartography/rbac.yaml + ClusterRoleBinding).
+    command:
+      - --neo4j-uri=bolt://neo4j:7687
+      - --neo4j-user=${NEO4J_USER}
+      - --neo4j-password-env-var=NEO4J_PASSWORD
+      - --selected-modules=kubernetes,aws
+      - --aws-requested-syncs=${CARTOGRAPHY_AWS_REQUESTED_SYNCS:-ec2:instance,ec2:subnet,ec2:security_group,ec2:route_table,ec2:network_acls,ec2:network_interface,ec2:vpc_endpoint,ec2:load_balancer,ec2:load_balancer_v2,rds,elasticache}
+      - --aws-regions=${CARTOGRAPHY_AWS_REGIONS:-eu-west-1}
+      - --k8s-kubeconfig=/var/cartography/.kube/config
+      - --managed-kubernetes=eks
+    networks:
+      - aegisops-network
+
+  user-management:
+    build: ./user-management
+    container_name: aegisops-user-management
+    ports:
+      - "8004:8004"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}
+      - REDIS_URL=redis://${REDIS_HOST}:${REDIS_PORT}/4
+      - KEYCLOAK_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID}
+      - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
+      - ENVIRONMENT=${ENVIRONMENT}
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8004/health\")' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - aegisops-network
+
+  # ===================================
+  # OBSERVABILITY STACK
+  # ===================================
+  observability:
+    build: ./observability
+    container_name: aegisops-observability
+    ports:
+      - "8003:8003"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}
+      - REDIS_URL=redis://${REDIS_HOST}:${REDIS_PORT}/3
+      - PROMETHEUS_URL=http://prometheus:9090
+      - ALERTMANAGER_URL=http://alertmanager:9093
+      - OTEL_COLLECTOR_ENDPOINT=http://otel-collector:4317
+      - AGENT_ORCHESTRATION_URL=http://agent-orchestration:8002
+      - CONTEXT_MANAGEMENT_URL=http://context-management:8000
+      - RAG_URL=http://rag:8001
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8003/health\")' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - aegisops-network
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.91.0
+    container_name: aegisops-otel-collector
+    ports:
+      - "4317:4317"
+    volumes:
+      - ./observability/otel-collector/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    networks:
+      - aegisops-network
+      - aegisops-shared      
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: aegisops-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    networks:
+      - aegisops-network
+
+  prometheus-mcp:
+    image: ghcr.io/pab1it0/prometheus-mcp-server:latest
+    container_name: aegisops-prometheus-mcp
+    ports:
+      - "8086:8080"
+    environment:
+      - PROMETHEUS_URL=${PROMETHEUS_URL}
+      - PROMETHEUS_MCP_SERVER_TRANSPORT=http
+      - PROMETHEUS_MCP_BIND_HOST=0.0.0.0
+      - PROMETHEUS_MCP_BIND_PORT=8080
+      - PROMETHEUS_TOKEN=${PROMETHEUS_TOKEN}
+    depends_on:
+      - prometheus
+    networks:
+      - aegisops-network
+      - aegisops-shared
+
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: aegisops-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    networks:
+      - aegisops-network
+
+  alertmanager-mcp:
+    image: ghcr.io/ntk148v/alertmanager-mcp-server:latest
+    container_name: aegisops-alertmanager-mcp
+    ports:
+      - "8008:8000"
+    environment:
+      - ALERTMANAGER_URL=${ALERTMANAGER_URL}
+      - ALERTMANAGER_USERNAME=${ALERTMANAGER_MCP_USERNAME}
+      - ALERTMANAGER_PASSWORD=${ALERTMANAGER_MCP_PASSWORD}
+      - MCP_TRANSPORT=http
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
+    depends_on:
+      - alertmanager
+    networks:
+      - aegisops-network
+      - aegisops-shared
+
+  # Flux159 kubectl MCP (default backend when KUBERNETES_MCP_BACKEND=flux).
+  # To turn it off while using the native server: docker compose stop kubernetes-mcp
+  # (and set KUBERNETES_MCP_URL to kubernetes-mcp-native, see below).
+  kubernetes-mcp:
+    image: flux159/mcp-server-kubernetes:v3.4.0
+    container_name: aegisops-kubernetes-mcp
+    ports:
+      - "8087:8080"
+    # Avoid Docker 127.0.0.11 "lame referral" on EKS API DNS (common on Docker Desktop / some VPNs).
+    dns:
+      - ${KUBERNETES_MCP_DNS:-8.8.8.8}
+      - ${KUBERNETES_MCP_DNS_FALLBACK:-8.8.4.4}
+    dns_search: []
+    environment:
+      - KUBECONFIG=/home/appuser/.kube/config
+      - K8S_CONTEXT=${ISTIO_MCP_CONTEXT:-static-context}
+      - ENABLE_UNSAFE_STREAMABLE_HTTP_TRANSPORT=1
+      - HOST=0.0.0.0
+      - PORT=8080
+      - SPAWN_MAX_BUFFER=5242880
+    volumes:
+      - ${KUBECONFIG_HOST_PATH:-../eks-static-access/kubeconfig}:/home/appuser/.kube/config:ro
+    networks:
+      - aegisops-network
+      - aegisops-shared
+
+  # Go native Kubernetes API MCP (https://github.com/containers/kubernetes-mcp-server). Optional: start with
+  #   docker compose --profile containers-k8s-mcp up -d kubernetes-mcp-native
+  # Then set KUBERNETES_MCP_BACKEND=containers and KUBERNETES_MCP_URL=http://kubernetes-mcp-native:8080 on the mcp service.
+  kubernetes-mcp-native:
+    image: ghcr.io/containers/kubernetes-mcp-server:v0.0.60
+    container_name: aegisops-kubernetes-mcp-native
+    profiles:
+      - containers-k8s-mcp
+    ports:
+      - "8089:8080"
+    # Same as kubernetes-mcp: public DNS so EKS *.amazonaws.com resolves (not Docker embedded DNS).
+    dns:
+      - ${KUBERNETES_MCP_DNS:-8.8.8.8}
+      - ${KUBERNETES_MCP_DNS_FALLBACK:-8.8.4.4}
+    dns_search: []
+    command:
+      - /app/kubernetes-mcp-server
+      - --port=8080
+      - --kubeconfig=/kubeconfig/config
+      - --list-output=yaml
+      - --stateless
+      - --read-only
+      - --disable-multi-cluster
+    volumes:
+      - ${KUBECONFIG_HOST_PATH:-../eks-static-access/kubeconfig}:/kubeconfig/config:ro
+    networks:
+      - aegisops-network
+      - aegisops-shared
+
+  aws-mcp:
+    image: mcp/aws-core-mcp-server:latest
+    container_name: aegisops-aws-mcp
+    ports:
+      - "8088:8080"
+    environment:
+      - AWS_REGION=${AWS_REGION}
+      # Credential precedence in AWS SDK:
+      # 1) AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY (if provided)
+      # 2) AWS_PROFILE + shared credentials file
+      - AWS_ACCESS_KEY_ID=${AWS_MCP_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_MCP_SECRET_ACCESS_KEY}
+      - AWS_PROFILE=${AWS_MCP_PROFILE}
+      - AWS_SHARED_CREDENTIALS_FILE=${AWS_MCP_SHARED_CREDENTIALS_FILE:-/home/appuser/.aws/credentials}
+      - AWS_CONFIG_FILE=${AWS_MCP_CONFIG_FILE:-/home/appuser/.aws/config}
+      - MCP_TRANSPORT=http
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8080
+    volumes:
+      - ${HOME}/.aws:/home/appuser/.aws:ro
+    networks:
+      - aegisops-network
+      - aegisops-shared
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: aegisops-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - aegisops-network
+
+  # ===================================
+  # FRONTEND
+  # ===================================
+  user-interface:
+    build: ./user-interface
+    container_name: aegisops-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+      - NEXT_PUBLIC_KEYCLOAK_URL=${NEXT_PUBLIC_KEYCLOAK_URL}
+      - NEXT_PUBLIC_KEYCLOAK_REALM=${KEYCLOAK_REALM}
+      - NEXT_PUBLIC_KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID}
+    depends_on:
+      - agent-orchestration
+      - keycloak
+    networks:
+      - aegisops-network
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  prometheus_data:
+  grafana_data:
+  context_data:
+  rag_data:
+  agent_data:
+
+# networks:
+#   aegisops-network:
+#     driver: bridge
+networks:
+  aegisops-network:
+    driver: bridge
+  aegisops-shared:
+    external: true
+    name: aegisops-shared    

@@ -1,0 +1,112 @@
+# AegisOps Alert Rules per HLD SLO Hints
+
+groups:
+  - name: aegisops_performance
+    rules:
+      - alert: LLMLatencyHigh
+        expr: histogram_quantile(0.95, rate(llm_request_duration_seconds_bucket[5m])) > 3
+        for: 5m
+        labels:
+          severity: warning
+          component: llm
+        annotations:
+          summary: "LLM P95 latency is high"
+          description: "LLM P95 latency {{ $value }}s exceeds 3s threshold for 5 minutes"
+
+      - alert: ToolErrorRateHigh
+        expr: rate(tool_calls_total{outcome="error"}[10m]) / rate(tool_calls_total[10m]) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          component: tools
+        annotations:
+          summary: "Tool error rate is high"
+          description: "Tool error rate {{ $value | humanizePercentage }} exceeds 5% threshold"
+
+      - alert: ApprovalWaitTimeHigh
+        expr: histogram_quantile(0.95, rate(approval_wait_time_seconds_bucket[5m])) > 300
+        for: 5m
+        labels:
+          severity: warning
+          component: approvals
+        annotations:
+          summary: "Approval wait time is high"
+          description: "P95 approval wait time {{ $value }}s exceeds 5 minute threshold"
+
+  - name: aegisops_rag
+    rules:
+      - alert: RAGIndexStale
+        expr: (time() - rag_last_index_update_timestamp) / 3600 > 6
+        for: 30m
+        labels:
+          severity: warning
+          component: rag
+        annotations:
+          summary: "RAG index is stale"
+          description: "RAG index has not been updated for {{ $value | humanizeDuration }}"
+
+      - alert: RAGRetrievalLatencyHigh
+        expr: histogram_quantile(0.95, rate(rag_retrieval_duration_seconds_bucket[5m])) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          component: rag
+        annotations:
+          summary: "RAG retrieval latency is high"
+          description: "P95 retrieval latency {{ $value }}s exceeds 800ms threshold"
+
+  - name: aegisops_cache
+    rules:
+      - alert: CacheHitRatioLow
+        expr: rate(cache_hits_total[15m]) / (rate(cache_hits_total[15m]) + rate(cache_misses_total[15m])) < 0.5
+        for: 15m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Cache hit ratio is low"
+          description: "Cache hit ratio {{ $value | humanizePercentage }} below 50% threshold"
+
+  - name: aegisops_reliability
+    rules:
+      - alert: RemediationRollbackRateHigh
+        expr: increase(remediation_rollbacks_total[24h]) / increase(remediation_total[24h]) > 0.1
+        for: 1h
+        labels:
+          severity: critical
+          component: remediation
+        annotations:
+          summary: "Remediation rollback rate is high"
+          description: "Rollback rate {{ $value | humanizePercentage }} exceeds 10% threshold"
+
+      - alert: SSEReconnectsSpike
+        expr: rate(sse_reconnects_total[5m]) > avg_over_time(rate(sse_reconnects_total[5m])[1h:5m]) + 3 * stddev_over_time(rate(sse_reconnects_total[5m])[1h:5m])
+        for: 5m
+        labels:
+          severity: warning
+          component: streaming
+        annotations:
+          summary: "SSE reconnects spike detected"
+          description: "SSE reconnect rate is significantly above baseline"
+
+  - name: aegisops_availability
+    rules:
+      - alert: ServiceUnhealthy
+        expr: aegisops_service_health == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "Service {{ $labels.service }} is unhealthy"
+          description: "Service {{ $labels.service }} health check failing for 2 minutes"
+
+      - alert: APILatencyHigh
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "API P95 latency is high"
+          description: "API P95 latency {{ $value }}s exceeds 1s threshold"

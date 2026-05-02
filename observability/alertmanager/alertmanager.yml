@@ -1,0 +1,56 @@
+# Alertmanager configuration for AegisOps
+# Minimal config for local development
+
+global:
+  resolve_timeout: 5m
+
+# Routing tree
+route:
+  group_by: ['alertname', 'severity', 'component']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: 'default'
+  
+  routes:
+    # Critical alerts - immediate notification
+    - match:
+        severity: critical
+      receiver: 'critical-alerts'
+      group_wait: 10s
+      repeat_interval: 1h
+      continue: true
+    
+    # Warning alerts
+    - match:
+        severity: warning
+      receiver: 'warning-alerts'
+      group_wait: 1m
+      repeat_interval: 4h
+
+receivers:
+  # Default receiver - webhook to observability service
+  - name: 'default'
+    webhook_configs:
+      - url: 'http://observability:8003/webhooks/alerts'
+        send_resolved: true
+
+  # Critical alerts
+  - name: 'critical-alerts'
+    webhook_configs:
+      - url: 'http://observability:8003/webhooks/alerts'
+        send_resolved: true
+
+  # Warning alerts
+  - name: 'warning-alerts'
+    webhook_configs:
+      - url: 'http://observability:8003/webhooks/alerts'
+        send_resolved: true
+
+# Inhibition rules
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'component']
